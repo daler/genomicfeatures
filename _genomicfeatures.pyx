@@ -13,7 +13,7 @@
 #       the right feature type . . . or is it better to have different parser
 #       methods instead of entirely new classes?
 # DONE: SAMFile, SAMFeature -- wrap pysam's AlignedRead class
-# TODO: BAMFile, BAMFeature
+# DONE: BAMFile, BAMFeature
 # TODO: GFFFile, GFFFeature
 # TODO: VCFFile, VCFFeature
 # TODO: composite features
@@ -22,18 +22,20 @@
 import pysam
 
 
-def class AutoDetect(object):
+cdef class AutoDetect(object):
     cdef public str line
 
     def __init__(self,line):
+        raise NotImplementedError, 'this is just a placeholder for now...'
         self.line = line
+        
     
     def inspect_fields(self):
         """
         identify the number fields and the string fields.
 
-        also look for things like cigar strings, seq and qual fiels with same length, 
-        and other format-specific field properties
+        Also look for things like cigar strings, seq and qual fields with same
+        length, and other format-specific field properties
         """
 
 cdef class Interval(object):
@@ -357,7 +359,7 @@ cdef class SAMFile(object):
 
 cdef class BAMFile(SAMFile):
     def __init__(self, str fn):
-        self._handle = pysam.Samfile(fn,'b')
+        self._handle = pysam.Samfile(fn,'rb')
 
 cdef class GTFFile(IntervalFile):
 
