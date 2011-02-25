@@ -1,4 +1,7 @@
+# cython: profile=True
+
 #!/usr/bin/python
+
 # encoding: utf-8
  
 # To build for testing:
@@ -20,6 +23,312 @@
 # TODO: format auto-detect
 
 import pysam
+from collections import deque
+import numpy as np
+cimport numpy as np
+
+
+cpdef float dups_score(object x, int halfwidth, float scalar=1) except -1:
+    """
+    Returns the score at the centerpoint for a window of features, *x*.  *x*
+    should be a list or deque.
+
+    *halfwidth* is what the halfwidth of the window should be.
+
+    *scalar* is what each score should be mutliplied by (e.g., a scale factor
+    for reads per million mapped)
+
+    Score is calculated by taking the sum of reads in the center and iding
+    by average number of of non-zero and non-center duplicates.
+
+    Window size is assumed to be (x[0].start + halfwidth).
+    
+    The window [0, 0, 0, 4, 4, 5, 5, 5, 5, 5, 5, 8] with a halfwidth=5 would
+    be counted like this::
+
+                  _
+                  _
+                  _
+        _         _
+        _       _ _
+        _       _ _     _
+        0 1 2 3 4 5 6 7 8 9
+        ^         ^
+        |         |
+        start    center  
+
+        number of center duplicates = 6
+
+        avg nonzero duplicates = (3 reads at pos 0) + (2 reads at pos 4) + (1 read at pos 8)  
+                                 ___________________________________________________________  = 2.0
+                                                  3 positions with >0 reads
+                                                  
+        score at pos 5 = 6 / 2.0 = 3.0
+
+
+        NEXT WINDOW:
+          _
+          _
+          _
+          _
+        _ _
+        _ _     _
+        4 5 6 7 8 9 10 11 12 13
+                  ^
+                  |
+                center
+
+       center dups = 0
+       score at center = 0
+
+    """
+    cdef np.ndarray[np.int_t, ndim=1] starts = np.array([j.start for j in x])
+    
+    # subtract the left edge, so now the window goes from 0 to 2*halfwidth
+    # instead of being in genomic coords
+    starts -= starts[0]
+
+    # "The output, b[i], represents the number of times that i is found in
+    # `x`."
+    #
+    # So, for example, 
+    #
+    # >>> bincount([0, 0, 0, 4, 4, 5, 5, 5, 5, 5, 5, 8])
+    # 
+    # index: 0  1  2  3  4  5  6  7  8
+    #        |  |  |  |  |  |  |  |  |
+    # array([3, 0, 0, 0, 2, 6, 0, 0, 1])
+    #        ^                       ^
+    #    '0' was found 3 times       '8' was found once
+    
+    cdef np.ndarray[np.int_t, ndim=1] dup_counts = np.bincount(starts)
+
+    # if we can't even get a duplicate count on the centerpoint, then the score
+    # is defined to be zero.
+    cdef float dc_len 
+    dc_len = float(len(dup_counts))
+    if dc_len <= halfwidth:
+        return 0 
+
+    # Imagine for the example above that halfwidth is 6 
+    # There are (2*halfwidth - len(dup_counts) ) zeros that could be appended on the end.
+    #
+    # dup_counts = [3, 0, 0, 0, 2, 6, 0, 0, 1]
+
+    # What it would look like if we took the time to actually pad it:
+    # padded     = [3, 0, 0, 0, 2, 6, 0, 0, 1, 0, 0, 0]
+    
+    # But instead let's just get how many extra zeros there should be
+    padding = 2*halfwidth - dc_len
+    
+    # To avoid divide-by-zero, let's add 1 to everything.  A side effect is
+    # that the lower nonzero bound on a score will be 1 / (2*halfwidth), for
+    # the case of a single read all by its lonesome, with no other reads in the
+    # window
+
+    # add 1 to everything we have a value for so far
+    dup_counts += 1
+
+    # number of actual center duplicates plus 1
+    center_dups = dup_counts[halfwidth] 
+    
+    # the padding is added cause it's like we're adding padding * 1 reads to
+    # the window total.
+    non_center_dups = dup_counts.sum() + padding - center_dups
+
+    avg_dups = non_center_dups / (dc_len - 1) 
+    score = center_dups / avg_dups * scalar
+    return score
+    
+
+cdef class Window(object):
+    cdef public object iterable
+    cdef public object features
+    cdef public int pos
+    cdef public int halfwidth
+    cdef public int limit
+    cdef public int debug
+    cdef object buffered_feature
+    cdef int counter
+    cdef int TRIM
+    cdef int left_edge
+    cdef int right_edge
+    cdef str chrom
+    cdef int READY
+    cdef int STARTING
+
+    def __init__(self, iterable, halfwidth=100, limit=10, debug=0):
+        """
+        *iterable* is a an IntervalFile subclass instance.
+
+        *halfwidth* is 0.5 * how big you want the window to be.
+        """
+        
+        self.debug = debug
+        self.READY = 0
+        self.TRIM = 0
+        self.limit = limit
+        self.iterable = iterable
+        self.features = deque()
+        self.pos = 0
+        self.halfwidth = halfwidth
+        self.counter = 0
+
+        first_read = self.iterable.next()
+        self.left_edge = first_read.start
+        self.right_edge = self.left_edge + 2*self.halfwidth
+        self.chrom = first_read.chrom
+        self.STARTING = 1
+
+    cdef int within_current_window(self, str chrom, int start):
+        """
+        if self.features[0].start < feature.start < right_edge, then we're
+        good. Otherwise store the feature.
+        """
+        if self.debug:
+            print '\tchecking if %s:%s within %s-%s...' % (chrom,start, self.left_edge, self.right_edge),
+        if self.STARTING:
+            self.STARTING = 0
+            if self.debug:
+                print '(yes, starting)',
+            return 1
+        if start <= self.right_edge:
+            if chrom == self.chrom:
+                if self.debug:
+                    print '(yes)',
+                return 1
+        if self.debug:
+            print '(no)',
+        return 0
+
+    cdef int accumulate_features(self) except -1:
+        """
+        Grabs new features as long as they're within range of the window
+        """
+        while True:
+            self.buffered_feature = self.iterable.next()
+             
+            if self.within_current_window(self.buffered_feature.chrom, self.buffered_feature.start) == 1:
+                self.features.append(self.buffered_feature)
+                if self.debug:
+                    print 'added buffered read to window'
+            
+            # if not in range then set the TRIM flag, which __next__ will see
+            else:
+                if self.debug:
+                    print 'buffered read not in range, saving for later'
+                self.READY = 1
+                self.TRIM = 1
+                break
+        if len(self.features) == 0:
+            self.READY = 0 
+            self.TRIM = 0
+
+    cdef int trim(self) except -1:
+        """
+        Trims duplicates off of self.features.  Duplicates are defined as
+        having identical chrom and start positions.  The currently buffered
+        read will be appended to the new window, if it fits.
+        """
+        if len(self.features) == 0:
+            return 0
+        first_item = self.features[0]
+
+        while len(self.features) > 0:
+            if self.debug:
+                print 'inside trimming loop...',
+            # if they're the same, then popleft 
+            if (first_item.start == self.features[0].start) and (first_item.chrom == self.features[0].chrom):
+                _ = self.features.popleft()
+                if self.debug:
+                    print 'popping off leftmost read', _.start
+                continue
+
+            # if not, then break!
+            else:
+                if self.debug:
+                    print self.features[0].start, 'not a duplicate of', first_item.start, 'so done trimming!'
+                break
+        
+        # check to see if the buffered read will fit
+        if len(self.features) > 0:
+            self.set_window_edges()
+        
+        if self.within_current_window(self.buffered_feature.chrom, self.buffered_feature.start):
+
+            if self.debug:
+                print 'appending buffered read within trim()'
+            self.features.append(self.buffered_feature)
+            self.TRIM = 0
+            self.READY = 0
+        
+        else:
+            if self.debug:
+                print 'buffered feature won\'t fit new window, will need trimming next time'
+            # buffered read won't fit, so we return the trimmed window and
+            # prepare for trimming next time
+            self.TRIM = 1
+            self.READY = 1
+        
+        return 0
+
+        
+    cdef int set_window_edges(self):
+
+        self.left_edge = self.features[0].start
+        self.right_edge = self.left_edge + 2*self.halfwidth
+        self.chrom = self.features[0].chrom
+        if self.debug:
+            print 'new edges: %s:%s-%s' % (self.chrom, self.left_edge, self.right_edge)
+        return 0
+
+    def __next__(self):
+        """
+        Returns deques of all reads whose start positions fall within
+        2*self.halfwidth bp of the first read in the window.
+        """
+         
+        if self.limit > 0:
+            if self.counter > self.limit:
+                raise StopIteration
+        if len(self.features) > 0:
+            self.set_window_edges()
+        self.READY = 0
+        while self.READY == 0:
+            
+            # for stopping early...
+            self.counter += 1
+            
+            # "self.TRIM = 0" means get as many reads as can fit in the window
+            if self.TRIM == 0:    
+                if self.debug:
+                    print 'entering accumulation'
+                self.accumulate_features()
+                if self.debug:
+                    print 'done accumulation, features now:', [i.start for i in self.features]
+                if len(self.features) > 0:
+                    self.set_window_edges()
+                    break
+
+            # "self.TRIM = 1" means pop off duplicates and see if the buffered
+            # read will fit.
+
+            # NOTE: might need to test for !READY here.
+            elif self.TRIM == 1 and self.READY == 0: 
+
+                self.trim()
+                if len(self.features) == 0:
+                    if self.debug:
+                        print 'features is empty -- adding buffered read in trim()'
+                    self.features.append(self.buffered_feature)
+
+            if len(self.features) == 0:
+                self.READY = 0
+
+        return self.features
+            
+    def __iter__(self):
+        return self
 
 
 cdef class AutoDetect(object):
@@ -28,7 +337,6 @@ cdef class AutoDetect(object):
     def __init__(self,line):
         raise NotImplementedError, 'this is just a placeholder for now...'
         self.line = line
-        
     
     def inspect_fields(self):
         """
@@ -103,7 +411,6 @@ cdef class SAMFeature(Interval):
         def __get__(self):
             return 11 + len(self.pysam_read.tags)
     
-
     property alignments:
         def __get__(self):
             alignments = []
@@ -344,9 +651,11 @@ cdef class IntervalFile(object):
 cdef class SAMFile(object):
     cdef type _featureclass
     cdef object _handle
+    cdef public str fn
 
-    def __cinit__(self,*args):
+    def __cinit__(self,fn):
         self._featureclass = SAMFeature
+        self.fn = fn
         
     def __init__(self, str fn):
         self._handle = pysam.Samfile(fn)
@@ -356,6 +665,9 @@ cdef class SAMFile(object):
 
     def __next__(self):
         return self._featureclass(self._handle.next(), self._handle)
+
+    def count(self):
+        return int(pysam.view(self.fn, '-c')[0])
 
 cdef class BAMFile(SAMFile):
     def __init__(self, str fn):
@@ -391,4 +703,15 @@ cdef class BEDFile(IntervalFile):
         else:
             return 1
 
+def _test_windows():
+    fn = 'test/example.bam'
+    window = Window(BAMFile(fn), debug=0, limit=-1, halfwidth=1000)
+    c = 0
+
+    for w in window:
+        c += 1
+        if c > 50000:
+            break
+        pass
+        #score = dups_score(w, window.halfwidth)
 
