@@ -162,6 +162,9 @@ cdef class Window(object):
         *iterable* is a an IntervalFile subclass instance.
 
         *halfwidth* is 0.5 * how big you want the window to be.
+
+        If *debug* = 0, then lots of debugging info will be printed.  You
+        probably will want *limit* to be set!
         """
         
         self.debug = debug
@@ -212,7 +215,7 @@ cdef class Window(object):
                 self.features.append(self.buffered_feature)
                 if self.debug:
                     print 'added buffered read to window'
-            
+                  
             # if not in range then set the TRIM flag, which __next__ will see
             else:
                 if self.debug:
@@ -220,6 +223,7 @@ cdef class Window(object):
                 self.READY = 1
                 self.TRIM = 1
                 break
+
         if len(self.features) == 0:
             self.READY = 0 
             self.TRIM = 0
@@ -258,6 +262,7 @@ cdef class Window(object):
 
             if self.debug:
                 print 'appending buffered read within trim()'
+
             self.features.append(self.buffered_feature)
             self.TRIM = 0
             self.READY = 0
@@ -272,12 +277,13 @@ cdef class Window(object):
         
         return 0
 
-        
-    cdef int set_window_edges(self):
-
-        self.left_edge = self.features[0].start
+    cdef int set_window_edges(self) except -1:
+        try:
+            self.left_edge = self.features[0].start
+            self.chrom = self.features[0].chrom
+        except IndexError:
+            pass
         self.right_edge = self.left_edge + 2*self.halfwidth
-        self.chrom = self.features[0].chrom
         if self.debug:
             print 'new edges: %s:%s-%s' % (self.chrom, self.left_edge, self.right_edge)
         return 0
@@ -288,41 +294,77 @@ cdef class Window(object):
         2*self.halfwidth bp of the first read in the window.
         """
          
+        # For debugging
         if self.limit > 0:
             if self.counter > self.limit:
                 raise StopIteration
+        
+        # Reset the window edges; not sure if this needs to be done here.
         if len(self.features) > 0:
             self.set_window_edges()
+
+        # Every "next()" call we assume it's not ready, so the loop below will
+        # run at least once. 
+        #
+        # self.READY will be set to 1 when:
+        #
+        #   * self.accumulate_features() hits a read that won't fit, so the
+        #     current window is ready
+        #
+        #   * self.trim() pops a batch of duplicates off the beginning of the
+        #     window, so now it's ready
+        #
         self.READY = 0
+
         while self.READY == 0:
             
-            # for stopping early...
+            # For stopping early...
             self.counter += 1
             
-            # "self.TRIM = 0" means get as many reads as can fit in the window
+            # "self.TRIM = 0" means we're not trimming, we're accumulating.  So
+            # get as many reads as can fit in the window
             if self.TRIM == 0:    
                 if self.debug:
                     print 'entering accumulation'
+                
                 self.accumulate_features()
+
                 if self.debug:
                     print 'done accumulation, features now:', [i.start for i in self.features]
+                
                 if len(self.features) > 0:
                     self.set_window_edges()
                     break
 
             # "self.TRIM = 1" means pop off duplicates and see if the buffered
-            # read will fit.
+            # read will fit.  This is an "else" because we don't want to run it
+            # till the next call.  self.TRIM will be 1 if:
+            #
+            #   * self.accumulate_features() finishes running
+            #
+            #   * self.trim() does a round of trimming, but the buffered read
+            #     is still out-of-range even from the newly trimmed window
 
-            # NOTE: might need to test for !READY here.
             elif self.TRIM == 1 and self.READY == 0: 
-
                 self.trim()
+                if self.debug:
+                    print 'done trimming.  features now:', [i.start for i in self.features]
                 if len(self.features) == 0:
                     if self.debug:
-                        print 'features is empty -- adding buffered read in trim()'
+                        print 'features is empty after trimming -- appending buffered feature and continuing the while-loop in next();',
                     self.features.append(self.buffered_feature)
+                    if self.debug:
+                        print 'features now:', [i.start for i in self.features]
+                    self.set_window_edges()
+                    self.TRIM = 0
+                    self.READY = 0
 
-            if len(self.features) == 0:
+            # If we got through all of that, but still nothing in the window,
+            # then we're still not ready.  Head around back to the beginning of
+            # the while-loop
+            if len(self.features) == 0: 
+                if self.debug:
+                    print 'still nothing!  moving on to next read'
                 self.READY = 0
 
         return self.features
@@ -331,20 +373,86 @@ cdef class Window(object):
         return self
 
 
-cdef class AutoDetect(object):
-    cdef public str line
 
-    def __init__(self,line):
-        raise NotImplementedError, 'this is just a placeholder for now...'
-        self.line = line
+cpdef inspect_fields(line):
+    """
+    Given a *line*, try to figure out what kind of feature it is, then return
+    that feature.
+
+    If it can't, it will return a GenericInterval by making some assumptions
+    about chrom, start, stop, and strand.
+    """
+    fields = line.split('\t')
     
-    def inspect_fields(self):
-        """
-        identify the number fields and the string fields.
+    nfields = len(fields)
+    # only BED files (out of currently supported formats) can have fewer
+    # than 8 fields
+    if nfields < 8:
+        return BEDFeature(line)
 
-        Also look for things like cigar strings, seq and qual fields with same
-        length, and other format-specific field properties
+    if nfields == 11:
+        return SAMFeature(line)
+
+    # could be GFF or GTF.  Check the format of the last field...
+    if nfields == 8:
+        attributes = fields[-1]
+        if len(attributes) == 0:
+            raise ValueError, 'ambiguous feature type -- GFF or GTF; last field empty'
+
+        # does it have about as many '='s as ';'s?
+        num_eq = attributes.count('=')
+        num_semi = attributes.count(';')
+        if (num_eq == num_semi) or (num_eq == num_semi+1):
+            return GFFFeature(self._line)
+        elif ('gene_id' in attributes) and ('transcript_id' in attributes):
+            return GTFFeature(self._line)
+    
+    
+    # If you got here, you can't figure out what it is.  Make some
+    # assumptions, like chrom being the first field that can't be turned
+    # into an int, or strand is the first thing that's  either a '+','-',
+    # or '.'
+    start = None
+    stop = None
+    chrom = None
+    strand = None
+    for i,field in enumerate(fields):
+        try:
+            number = int(field)
+            if start is None:
+                start = number
+            elif stop is None:
+                stop = number
+        except ValueError:
+            if (strand is None) and ((field == '+') or (field == '.') or (field == '-') ):
+                strand = field
+            elif chrom is None:
+                chrom = field
+   
+    return GenericInterval(chrom,start,stop,strand)
+
+            
+
+        
+cdef class CompositeInterval(object):
+    cdef public int nfields
+    cdef public object fields
+    cdef public object featuretypes
+    cdef public object features
+
+    def __init__(self, this, other):
+        assert isinstance(this, Interval)
+        assert isinstance(other, Interval)
+        self.featuretypes = (this.__class__, other.__class__)
+        self.fields = (this.nfields, other.nfields)
+        self.features = (this, other)
+        self.nfields = sum(self.fields) 
+
+    cpdef split(self):
         """
+
+        """
+
 
 cdef class Interval(object):
     """
@@ -366,7 +474,7 @@ cdef class Interval(object):
         if self.strand == '-':
             return self.stop
         else:
-            raise ValueError, 'Undefined strand "%s"' % self.strand
+            raise ValueError, 'TSS not implemented for undefined strand "%s"' % self.strand
             return -1
     
     def __len__(self):
@@ -389,7 +497,6 @@ cdef class GenericInterval(Interval):
 cdef class SAMFeature(Interval):
     # wrapper around pysam AlignedRead object
     cdef public object pysam_read, pysam_samfile
-
 
     def __cinit__(self, *args):
         self.nfields = 11
@@ -562,10 +669,13 @@ cdef class GTFFeature(Interval):
     cdef dict _attributes
     cdef str _strattributes
     cdef int _attrs_parsed
+    cdef str _attribute_delimiter
     
     def __cinit__(self, line):
         self._line = line
         self._attrs_parsed = 0
+        self._attribute_delimiter = ';'
+        self._field_sep = ' '
         
         # GTFs always have exactly 8 fields
         self.nfields = 8
@@ -592,20 +702,35 @@ cdef class GTFFeature(Interval):
         # here we're saving just the string of attributes which will be parsed
         # only when asked for
         self._strattributes = L[8]
+        
+        # dictionary, where attributes will eventually go
+        self._attributes = {}
 
-    # using the property mechanism, we can postpone parsing the attributes
+    # Using the property mechanism, we can postpone parsing the attributes
     # until we actually need them . . .
     property attributes:
         def __get__(self):
             if self._attrs_parsed == 0:
                 self._parse_attributes()
             return self._attributes
+
+        def __set__(self, value):
+            if not isinstance(value, dict):
+                raise ValueError, 'attributes must be a dictionary'
+            self._attributes = value
     
     cpdef add_attributes(self,dict d):
         """
         Add dict *d* of field:values to attributes
         """
-        self._attributes.update(d)
+        str_to_add = self._attribute_delimiter.join(['%s%s%s'%(key, self._field_sep, value) for key,value in d.items()])
+        if self._strattributes[-1] != self._attribute_delimiter:
+            self._strattributes += self._attribute_delimiter
+        self._strattributes += str_to_add
+        
+        # tell the attributes method that _strattributes has changed and needs
+        # to be re-parsed next time attributes are asked for
+        self._attrs_parsed = 0
 
     cdef void _parse_attributes(self):
         """
@@ -625,11 +750,22 @@ cdef class GTFFeature(Interval):
             attrs[field] = value
         self._attributes = attrs 
 
-        # This lets the getter know that we've already parsed and that from now
-        # on it should just look at self._attributes instead of parsing
+        # This lets the getter know that we've already parsed; from now on it
+        # should just look at self._attributes instead of parsing
         # self._strattributes again.
         self._attrs_parsed = 1
 
+
+cdef class GFFFeature(GTFFeature):
+
+    def __cinit__(self, line):
+        self._line = line
+        self._attrs_parsed = 0
+        self._attribute_delimiter = ';'
+        self._field_sep = ' '
+    
+    def __init__(self, line):
+        GTFFeature.__init__(self, line)
 
 cdef class IntervalFile(object):
     cdef type _featureclass
@@ -702,16 +838,4 @@ cdef class BEDFile(IntervalFile):
             return 0
         else:
             return 1
-
-def _test_windows():
-    fn = 'test/example.bam'
-    window = Window(BAMFile(fn), debug=0, limit=-1, halfwidth=1000)
-    c = 0
-
-    for w in window:
-        c += 1
-        if c > 50000:
-            break
-        pass
-        #score = dups_score(w, window.halfwidth)
 
