@@ -1,8 +1,8 @@
 from setuptools import setup
 from setuptools.extension import Extension
 from Cython.Distutils import build_ext
-
-ext_modules = [Extension("_genomicfeatures", ["_genomicfeatures.pyx"])]
+import numpy
+ext_modules = [Extension("_genomicfeatures", ["_genomicfeatures.pyx"], include_dirs=[numpy.get_include()])]
 
 setup(
   name = 'genomicfeatures',
