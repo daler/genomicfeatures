@@ -27,6 +27,71 @@ from collections import deque
 import numpy as np
 cimport numpy as np
 
+cpdef float dups_score_sum(object x, int halfwidth, float scalar=1) except -1:
+    """
+    Returns the score at the centerpoint for a window of features, *x*.  *x*
+    should be a list or deque.
+
+    In contrast to dups_score(), which computes the *ratio* of center to
+    average window, this function takes the *difference*.
+    """
+    cdef np.ndarray[np.int_t, ndim=1] starts = np.array([j.start for j in x])
+    
+    # subtract the left edge, so now the window goes from 0 to 2*halfwidth
+    # instead of being in genomic coords
+    starts -= starts[0]
+
+    # "The output, b[i], represents the number of times that i is found in
+    # `x`."
+    #
+    # So, for example, 
+    #
+    # >>> bincount([0, 0, 0, 4, 4, 5, 5, 5, 5, 5, 5, 8])
+    # 
+    # index: 0  1  2  3  4  5  6  7  8
+    #        |  |  |  |  |  |  |  |  |
+    # array([3, 0, 0, 0, 2, 6, 0, 0, 1])
+    #        ^                       ^
+    #    '0' was found 3 times       '8' was found once
+    
+    cdef np.ndarray[np.int_t, ndim=1] dup_counts = np.bincount(starts)
+
+    # if we can't even get a duplicate count on the centerpoint, then the score
+    # is defined to be zero.
+    cdef float dc_len 
+    dc_len = float(len(dup_counts))
+    if dc_len <= halfwidth:
+        return 0 
+
+    # Imagine for the example above that halfwidth is 6 
+    # There are (2*halfwidth - len(dup_counts) ) zeros that could be appended on the end.
+    #
+    # dup_counts = [3, 0, 0, 0, 2, 6, 0, 0, 1]
+
+    # What it would look like if we took the time to actually pad it:
+    # padded     = [3, 0, 0, 0, 2, 6, 0, 0, 1, 0, 0, 0]
+    
+    # But instead let's just get how many extra zeros there should be
+    padding = 2*halfwidth - dc_len
+    
+    # To avoid divide-by-zero, let's add 1 to everything.  A side effect is
+    # that the lower nonzero bound on a score will be 1 / (2*halfwidth), for
+    # the case of a single read all by its lonesome, with no other reads in the
+    # window
+
+    # add 1 to everything we have a value for so far
+    dup_counts += 1
+
+    # number of actual center duplicates plus 1
+    center_dups = dup_counts[halfwidth] 
+    
+    # the padding is added cause it's like we're adding padding * 1 reads to
+    # the window total.
+    non_center_dups = dup_counts.sum() + padding - center_dups
+
+    avg_dups = non_center_dups / (dc_len - 1) 
+    score = (center_dups - avg_dups) * scalar
+    return score
 
 cpdef float dups_score(object x, int halfwidth, float scalar=1) except -1:
     """
@@ -101,6 +166,7 @@ cpdef float dups_score(object x, int halfwidth, float scalar=1) except -1:
     #        ^                       ^
     #    '0' was found 3 times       '8' was found once
     
+
     cdef np.ndarray[np.int_t, ndim=1] dup_counts = np.bincount(starts)
 
     # if we can't even get a duplicate count on the centerpoint, then the score
@@ -148,7 +214,7 @@ cdef class Window(object):
     cdef public int halfwidth
     cdef public int limit
     cdef public int debug
-    cdef object buffered_feature
+    cdef object buffered_feature, _first_read
     cdef int counter
     cdef int TRIM
     cdef int left_edge
@@ -177,10 +243,10 @@ cdef class Window(object):
         self.halfwidth = halfwidth
         self.counter = 0
 
-        first_read = self.iterable.next()
-        self.left_edge = first_read.start
+        self._first_read = self.iterable.next()
+        self.left_edge = self._first_read.start
         self.right_edge = self.left_edge + 2*self.halfwidth
-        self.chrom = first_read.chrom
+        self.chrom = self._first_read.chrom
         self.STARTING = 1
 
     cdef int within_current_window(self, str chrom, int start):
@@ -191,6 +257,7 @@ cdef class Window(object):
         if self.debug:
             print '\tchecking if %s:%s within %s-%s...' % (chrom,start, self.left_edge, self.right_edge),
         if self.STARTING:
+            self.features.append(self._first_read)
             self.STARTING = 0
             if self.debug:
                 print '(yes, starting)',
@@ -403,9 +470,9 @@ cpdef inspect_fields(line):
         num_eq = attributes.count('=')
         num_semi = attributes.count(';')
         if (num_eq == num_semi) or (num_eq == num_semi+1):
-            return GFFFeature(self._line)
+            return GFFFeature(line)
         elif ('gene_id' in attributes) and ('transcript_id' in attributes):
-            return GTFFeature(self._line)
+            return GTFFeature(line)
     
     
     # If you got here, you can't figure out what it is.  Make some
@@ -461,7 +528,7 @@ cdef class Interval(object):
     """
     cdef public int start, stop
     cdef public str chrom, strand
-    cdef str _line
+    cdef public str _line
     cdef object _split_line
     cdef public int nfields
 
@@ -660,9 +727,12 @@ cdef class BEDFeature(Interval):
         return self._line
 
 
-cdef class GTFFeature(Interval):
+cdef class GFeature(Interval):
+    """
+    Base class for GTF and GFF files, which pretty much only differ in their
+    attributes.
+    """
 
-    # extra attributes that GTFFeatures have over plain ol' Intervals
     cdef public float score
     cdef public str featuretype, method
     cdef public str phase
@@ -670,20 +740,9 @@ cdef class GTFFeature(Interval):
     cdef str _strattributes
     cdef int _attrs_parsed
     cdef str _attribute_delimiter
+    cdef str _field_sep
     
-    def __cinit__(self, line):
-        self._line = line
-        self._attrs_parsed = 0
-        self._attribute_delimiter = ';'
-        self._field_sep = ' '
-        
-        # GTFs always have exactly 8 fields
-        self.nfields = 8
-
-    def __init__(self, str line):
-        self.parse_line()
-
-    cdef void parse_line(self):
+    cdef int parse_line(self) except -1:
         """
         Simply split the line and put things where they belong, converting as
         necessary
@@ -693,7 +752,10 @@ cdef class GTFFeature(Interval):
         self.chrom = intern(L[0])
         self.start = int(L[3])
         self.stop = int(L[4])
-        self.score = float(L[5])
+        try:
+            self.score = float(L[5])
+        except ValueError:
+            self.score = 0
         self.strand = L[6]
         self.phase = L[7]
         self.method = L[1]
@@ -732,7 +794,7 @@ cdef class GTFFeature(Interval):
         # to be re-parsed next time attributes are asked for
         self._attrs_parsed = 0
 
-    cdef void _parse_attributes(self):
+    cdef int _parse_attributes(self) except -1:
         """
         Parse the attributes stored in self._strattributes and store 'em in a
         dictionary, self._attributes.
@@ -741,11 +803,14 @@ cdef class GTFFeature(Interval):
         cdef str field, value
         cdef list items
         attrs = {}
-        items = self._strattributes.strip().split(';')
+        try:
+            items = self._strattributes.strip().split(';')
+        except AttributeError:
+            print self._strattributes
         for item in items:
             if len(item) == 0:
                 continue
-            field, value = item.strip().split()
+            field, value = item.strip().split(self._field_sep)
             value = value.replace('"','')
             attrs[field] = value
         self._attributes = attrs 
@@ -756,16 +821,23 @@ cdef class GTFFeature(Interval):
         self._attrs_parsed = 1
 
 
-cdef class GFFFeature(GTFFeature):
+cdef class GFFFeature(GFeature):
+    def __init__(self, str line):
+        self._line = line
+        self._attrs_parsed = 0
+        self._attribute_delimiter = ';'
+        self._field_sep = '='
+        self.nfields = 8
+        self.parse_line()
 
-    def __cinit__(self, line):
+cdef class GTFFeature(GFeature):
+    def __init__(self, str line):
         self._line = line
         self._attrs_parsed = 0
         self._attribute_delimiter = ';'
         self._field_sep = ' '
-    
-    def __init__(self, line):
-        GTFFeature.__init__(self, line)
+        self.nfields = 8
+        self.parse_line()
 
 cdef class IntervalFile(object):
     cdef type _featureclass
@@ -776,8 +848,15 @@ cdef class IntervalFile(object):
 
     def __next__(self):
         line = self._handle.next() 
-        while self.is_invalid(line) == 0: 
-            line = self._handle.next()
+        while True:
+            valid = self.is_invalid(line)
+            if valid == 0: 
+                line = self._handle.next()
+            if valid == 1:
+                break
+            if valid == -1:
+                raise StopIteration
+
         return self._featureclass(line)
         
     def __iter__(self):
@@ -822,6 +901,24 @@ cdef class GTFFile(IntervalFile):
             return 0
         else:
             return 1
+
+cdef class GFFFile(IntervalFile):
+
+    def __cinit__(self,*args):
+        self._featureclass = GFFFeature
+    
+    def __init__(self, str fn):
+        self._handle = open(fn)
+    
+    cdef int is_invalid(self,str line):
+        # complete stop if we hit the FASTA section of a GFF file
+        if line[0] == '>':
+            return -1
+        if line[0] == '#':
+            return 0
+        else:
+            return 1
+
 
 cdef class BEDFile(IntervalFile):
 
