@@ -1,0 +1,9 @@
+look into refactoring into plain ol' python classes and using the 'augmenting
+.pxd' trick,
+http://docs.cython.org/src/tutorial/pure.html?highlight=pxd#augmenting-pxd
+
+vcf features
+
+composite features
+
+integration with pybedtools
