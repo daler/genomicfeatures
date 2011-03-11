@@ -17,10 +17,11 @@
 #       methods instead of entirely new classes?
 # DONE: SAMFile, SAMFeature -- wrap pysam's AlignedRead class
 # DONE: BAMFile, BAMFeature
-# TODO: GFFFile, GFFFeature
+# DONE: GFFFile, GFFFeature
 # TODO: VCFFile, VCFFeature
 # TODO: composite features
 # TODO: format auto-detect
+
 
 import pysam
 from collections import deque
@@ -447,7 +448,7 @@ cpdef inspect_fields(line):
     that feature.
 
     If it can't, it will return a GenericInterval by making some assumptions
-    about chrom, start, stop, and strand.
+    about chrom, start, stop, and strand
     """
     fields = line.split('\t')
     
@@ -473,8 +474,7 @@ cpdef inspect_fields(line):
             return GFFFeature(line)
         elif ('gene_id' in attributes) and ('transcript_id' in attributes):
             return GTFFeature(line)
-    
-    
+
     # If you got here, you can't figure out what it is.  Make some
     # assumptions, like chrom being the first field that can't be turned
     # into an int, or strand is the first thing that's  either a '+','-',
@@ -531,6 +531,7 @@ cdef class Interval(object):
     cdef public str _line
     cdef object _split_line
     cdef public int nfields
+    cdef public str other_attributes
 
     cpdef int midpoint(self):
         return self.start + (self.stop-self.start)/2
@@ -554,12 +555,14 @@ cdef class Interval(object):
         return '<%s %s:%s-%s(%s)>' % (self.__class__.__name__, self.chrom, self.start, self.stop, self.strand)
 
 cdef class GenericInterval(Interval):
-    def __init__(self, chrom,start,stop,strand):
+    def __init__(self, chrom,start,stop,strand,other_attributes=""):
         self.chrom = chrom
         self.start = start
         self.stop = stop
         self.strand = strand
-        self._line = '%s' % ((chrom,start,stop,strand),)
+        self.other_attributes = other_attributes
+        self._line = '%s' % ((chrom,start,stop,strand,other_attributes),)
+
 
 cdef class SAMFeature(Interval):
     # wrapper around pysam AlignedRead object
