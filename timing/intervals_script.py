@@ -1,5 +1,5 @@
 #!/usr/bin/python
-import _genomicfeatures 
+import genomicfeatures 
 import sys
 import pysam
 import os
@@ -12,17 +12,17 @@ limit = 100
 short = False
 
 if sys.argv[1] == 'gff':
-    interval_file = _genomicfeatures.GFFFile(os.path.join(this_dir, 'dm3.gff'))
+    interval_file = genomicfeatures.GFFFile(os.path.join(this_dir, 'dm3.gff'))
 if sys.argv[1] == 'gtf':
-    interval_file = _genomicfeatures.GTFFile(os.path.join(this_dir, 'hg19-genes.gtf'))
+    interval_file = genomicfeatures.GTFFile(os.path.join(this_dir, 'hg19-genes.gtf'))
 if sys.argv[1] == 'bed':
-    interval_file = _genomicfeatures.BEDFile(os.path.join(this_dir, 'hg19-genes.bed'))
+    interval_file = genomicfeatures.BEDFile(os.path.join(this_dir, 'hg19-genes.bed'))
 if sys.argv[1] == 'bed3':
-    interval_file = _genomicfeatures.BEDFile(os.path.join(this_dir, bed_fn+'3'))
+    interval_file = genomicfeatures.BEDFile(os.path.join(this_dir, bed_fn+'3'))
 if sys.argv[1] == 'sam':
-    interval_file = _genomicfeatures.SAMFile(os.path.join(this_dir, 'example.sam'))
+    interval_file = genomicfeatures.SAMFile(os.path.join(this_dir, 'example.sam'))
 if sys.argv[1] == 'bam':
-    interval_file = _genomicfeatures.BAMFile(os.path.join(this_dir, 'example.bam'))
+    interval_file = genomicfeatures.BAMFile(os.path.join(this_dir, 'example.bam'))
 
 for feature in interval_file:
     pass
@@ -35,7 +35,7 @@ print '\tnfields:', feature.nfields
 print '\tlen:', len(feature)
 print '\tstart:', feature.start
 print '\tstop:', feature.stop
-print '\tmidpoint:', feature.midpoint
+print '\tmidpoint:', feature.midpoint()
 
 
 if sys.argv[1] in ['gtf','gff']:
