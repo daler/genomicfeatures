@@ -8,8 +8,8 @@ cdef class GFeature(Interval):
 
     cdef int parse_line(self) except -1:
         """
-        Simply split the line and put things where they belong, converting as
-        necessary
+        Simply split the line and put things where they belong into attributes,
+        casting to types as necessary
         """
         cdef object L
         L = self._line.split('\t')
@@ -35,6 +35,12 @@ cdef class GFeature(Interval):
     # Using the property mechanism, we can postpone parsing the attributes
     # until we actually need them . . .
     property attributes:
+        """
+        Memoized dictionary of attributes of the feature.  Accessing this for
+        the first time will trigger the string attributes to be parsed.
+        Accesssing it subsequent times will give you the already-parsed
+        dictionary.
+        """
         def __get__(self):
             if self._attrs_parsed == 0:
                 self._parse_attributes()
@@ -47,7 +53,10 @@ cdef class GFeature(Interval):
     
     cpdef int add_attributes(self,dict d):
         """
-        Add dict *d* of field:values to attributes
+        Add dict *d* of field:values to attributes.
+
+            >>> feature.add_attributes({'geneid':'FBgn00001', 'length':10034})
+
         """
         str_to_add = self._attribute_delimiter.join(['%s%s%s'%(key, self._field_sep, value) for key,value in d.items()])
         if self._strattributes[-1] != self._attribute_delimiter:
@@ -103,8 +112,6 @@ cdef class GTFFeature(GFeature):
         self._field_sep = ' '
         self.nfields = 8
         self.parse_line()
-
-
 
 cdef class GTFFile(IntervalFile):
 
