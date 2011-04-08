@@ -187,7 +187,7 @@ cpdef float dups_score(object x, int halfwidth, float scalar=1) except -1:
     dup_counts[halfwidth] = 0
 
     avg_dups = dup_counts.mean() 
-    score = center_dups / (avg_dups+1) * scalar
+    score = center_dups / (avg_dups+1.0) * scalar
     return score
     
 
