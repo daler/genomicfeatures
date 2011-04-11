@@ -20,21 +20,19 @@ if 1:
     window = genomicfeatures.Window(interval_file, debug=debug, windowsize=windowsize)
     c = 0
     for w in window:
-        center = w[0]
-        reads = list(w[1])
-        reads.extend(w[2])
+        center, low_reads, high_reads = w
 
         c += 1
         if limit is not None:
             if c > limit:
                 break
 
-        score = genomicfeatures.score(reads, center=center, windowsize=windowsize)
+        score = genomicfeatures.dups_score(low_reads, high_reads, center, windowsize=windowsize)
         #center = w[0].start + window.halfwidth
         if debug:
             print '  %s =========>output:' % c, center, score, 
             print [i.start for i in reads]
-        fout.write('\t'.join([ reads[0].chrom, str(center), str(center+1), str(score)])+'\n')
+        fout.write('\t'.join([ low_reads[0].chrom, str(center), str(center+1), str(score)])+'\n')
         fout.flush()
     fout.close()
 

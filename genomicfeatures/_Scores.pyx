@@ -1,5 +1,27 @@
 import numpy as np
 cimport numpy as np
+from _Counter import Counter
+
+cpdef float dups_score(object low_reads, object high_reads, int center, int windowsize) except -1:
+    """
+    Computes the number of duplicates in the center and the average number
+    within the window of size *windowsize*
+    """
+    c = Counter([i.start for i in low_reads])
+    c.update([i.start for i in high_reads])
+    cdef float center_count
+    cdef int total
+    cdef int num
+    cdef float mn
+
+    center_count = float(c.pop(center))
+    total = sum(c.values())
+    num = len(c)
+    if num == 0:
+        return center_count
+    mn = total / (num)
+    return center_count / (mn)
+
 
 cpdef float dups_score_sum(object x, int halfwidth, float scalar=1) except -1:
     """
@@ -67,7 +89,7 @@ cpdef float dups_score_sum(object x, int halfwidth, float scalar=1) except -1:
     score = (center_dups - avg_dups) * scalar
     return score
 
-cpdef float dups_score(object x, int halfwidth, float scalar=1) except -1:
+cpdef float dups_score_old(object x, int halfwidth, float scalar=1) except -1:
     """
     Returns the score at the centerpoint for a window of features, *x*.  *x*
     should be a list or deque.

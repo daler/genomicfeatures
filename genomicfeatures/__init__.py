@@ -2,9 +2,11 @@ from _BaseFeatures import GenericInterval
 from _GFeatures import GFFFeature, GTFFeature, GFFFile, GTFFile
 from _BEDFeature import BEDFeature, BEDFile
 from _SAMFeature import SAMFeature, SAMFile, BAMFile
-#from _Window import Window
-from _Scores import dups_score, dups_score_sum
-from new_window import Window, score
+#from _Scores import dups_score, dups_score_sum
+from _Window import Window
+from _Scores import dups_score
+from _Counter import Counter
+from test_window import test_window
 
 
 def inspect_fields(line):
