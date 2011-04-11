@@ -1,5 +1,5 @@
 #!/usr/bin/python
-import genomicfeatures 
+import genomicfeatures
 import sys
 import os
 
@@ -12,18 +12,29 @@ interval_file = genomicfeatures.BAMFile(os.path.join(this_dir, fn))
 
 fout = open('test.bedgraph','w')
 fout.write('track type=bedGraph name=score_test\n')
-debug = 1
+debug = 0
+limit = 100000
 if 1:
-    window = genomicfeatures.Window(interval_file, debug=debug, limit=35, halfwidth=72)
+    #window = genomicfeatures.Window(interval_file, debug=debug, limit=35, halfwidth=72)
+    windowsize = 72
+    window = genomicfeatures.Window(interval_file, debug=debug, windowsize=windowsize)
     c = 0
     for w in window:
+        center = w[0]
+        reads = list(w[1])
+        reads.extend(w[2])
+
         c += 1
-        score = genomicfeatures.dups_score_sum(w, window.halfwidth)
-        center = w[0].start + window.halfwidth
+        if limit is not None:
+            if c > limit:
+                break
+
+        score = genomicfeatures.score(reads, center=center, windowsize=windowsize)
+        #center = w[0].start + window.halfwidth
         if debug:
             print '  %s =========>output:' % c, center, score, 
-            print [i.start for i in w]
-        fout.write('\t'.join([ w[0].chrom, str(center), str(center+1), str(score)])+'\n')
+            print [i.start for i in reads]
+        fout.write('\t'.join([ reads[0].chrom, str(center), str(center+1), str(score)])+'\n')
         fout.flush()
     fout.close()
 

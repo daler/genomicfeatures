@@ -383,10 +383,13 @@ def score(x, center, windowsize):
     within the window of size *windowsize*
     """
     c = Counter([i.start for i in x])
-    center_count = c[center]
-    c[center]=0
-    mn = sum(c.values()) / float(windowsize)
-    return center_count / (mn+1)
+    center_count = float(c.pop(center))
+    total = sum(c.values())
+    num = len(c)
+    if num == 0:
+        return center_count
+    mn = total / (num)
+    return center_count / (mn)
 
 if __name__ == "__main__":
     bam_fn = os.path.join(os.path.dirname(__file__), '../timing/window_example.bed')

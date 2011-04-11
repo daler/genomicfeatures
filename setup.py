@@ -47,7 +47,7 @@ def make_extension(extName):
 #                Extension("genomicfeatures._genomicfeatures", ["src/_genomicfeatures.pyx"], include_dirs=[numpy.get_include(),'.']),
 #                Extension("genomicfeatures._Window", ["src/_Window.pyx"], include_dirs=[numpy.get_include(),'.']),
 #                Extension("genomicfeatures._Scores", ["src/_Scores.pyx"], include_dirs=[numpy.get_include(),'.']),
-#                
+#
 #              ]
 
 ext_names = scandir('genomicfeatures')
