@@ -1,6 +1,5 @@
 # cython: profile=True
 
-import numpy as np
 import genomicfeatures
 import os
 from collections import deque
